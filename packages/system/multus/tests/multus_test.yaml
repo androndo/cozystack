@@ -29,3 +29,35 @@ tests:
       - matchRegex:
           path: data["daemon-config.json"]
           pattern: '"multusMasterCNI": "05-cilium\.conflist"'
+
+  # Guards the reference-CNI-plugin staging init container (bridge, macvlan, ...)
+  # that copies the plugins bundled in the image into /opt/cni/bin. Distros like
+  # k3s do not populate /opt/cni/bin with them, so bridge-type NADs fail without
+  # this. The init container lives in patches/customize-deployment.patch so it
+  # survives every make update.
+  - it: stages the reference CNI plugins into the host cni bin dir
+    template: templates/multus-daemonset-thick.yml
+    documentSelector:
+      path: kind
+      value: DaemonSet
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[1].name
+          value: install-cni-plugins
+      - equal:
+          path: spec.template.spec.initContainers[1].command
+          value:
+            - "sh"
+            - "-c"
+            - "cp -f /cni-plugins/* /host/opt/cni/bin/"
+      - equal:
+          path: spec.template.spec.initContainers[1].volumeMounts[0].mountPath
+          value: /host/opt/cni/bin
+      # The plugins live only in the cozystack-built multus image (staged by its
+      # Dockerfile). A make update that regenerated this container with the
+      # upstream image would leave /cni-plugins absent and the cp would
+      # crashloop, so pin the image repository the same way the container image
+      # test above does.
+      - matchRegex:
+          path: spec.template.spec.initContainers[1].image
+          pattern: '^ghcr\.io/cozystack/cozystack/multus-cni:'
