@@ -43,11 +43,15 @@
   has() then walks into metadata.labels safely. See the feedback memory
   cel-has-field-only.md.
 
-  Case handling: kube-apiserver validates spec.rules[].host and
-  spec.tls[].hosts[] as DNS-1123 subdomains (lowercase only), so the
-  apex/subdomain string comparisons below need no case normalization — a
-  mixed-case host is rejected by built-in validation and never reaches a
-  created state, so casing cannot be used to sidestep the comparisons.
+  Case handling: every comparison below normalizes both operands with
+  .lowerAscii() as defense-in-depth. The resource-side host is already
+  lowercase — kube-apiserver validates spec.rules[].host and
+  spec.tls[].hosts[] as DNS-1123 subdomains (lowercase only), so a
+  mixed-case host is rejected by built-in validation before this VAP
+  runs — but the apex operand is the namespace.cozystack.io/host label
+  VALUE, and Kubernetes permits uppercase in a label value. Lowercasing
+  both sides keeps the match correct even if the apex label (or the
+  templated root-host) ever carries uppercase.
 
   Defense-in-depth contract: this VAP is fail-closed. A tenant-*
   namespace without `namespace.cozystack.io/host` is rejected (not
@@ -59,7 +63,7 @@
 {{- $rootHost := index .Values._cluster "root-host" }}
 {{- if $rootHost }}
 {{- $A := `namespaceObject.metadata.labels["namespace.cozystack.io/host"]` }}
-{{- $celValidator := printf `(namespaceObject == null || !has(namespaceObject.metadata.labels) || !("namespace.cozystack.io/host" in namespaceObject.metadata.labels)) ? false : (!has(object.spec.defaultBackend) && (!has(object.spec.rules) || object.spec.rules.all(r, has(r.host) && r.host != "" && (r.host == %s || r.host.endsWith("." + %s) || (!r.host.startsWith("*.") && !(r.host == %q || r.host.endsWith(%q)))))) && (!has(object.spec.tls) || object.spec.tls.all(t, !has(t.hosts) || t.hosts.all(h, h != "" && (h == %s || h.endsWith("." + %s) || (!h.startsWith("*.") && !(h == %q || h.endsWith(%q))))))))` $A $A $rootHost (printf ".%s" $rootHost) $A $A $rootHost (printf ".%s" $rootHost) -}}
+{{- $celValidator := printf `(namespaceObject == null || !has(namespaceObject.metadata.labels) || !("namespace.cozystack.io/host" in namespaceObject.metadata.labels)) ? false : (!has(object.spec.defaultBackend) && (!has(object.spec.rules) || object.spec.rules.all(r, has(r.host) && r.host != "" && (r.host.lowerAscii() == %s.lowerAscii() || r.host.lowerAscii().endsWith("." + %s.lowerAscii()) || (!r.host.lowerAscii().startsWith("*.") && !(r.host.lowerAscii() == %q.lowerAscii() || r.host.lowerAscii().endsWith(%q.lowerAscii())))))) && (!has(object.spec.tls) || object.spec.tls.all(t, !has(t.hosts) || t.hosts.all(h, h != "" && (h.lowerAscii() == %s.lowerAscii() || h.lowerAscii().endsWith("." + %s.lowerAscii()) || (!h.lowerAscii().startsWith("*.") && !(h.lowerAscii() == %q.lowerAscii() || h.lowerAscii().endsWith(%q.lowerAscii()))))))))` $A $A $rootHost (printf ".%s" $rootHost) $A $A $rootHost (printf ".%s" $rootHost) -}}
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy

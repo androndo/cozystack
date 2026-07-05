@@ -53,6 +53,22 @@ tests:
           path: spec.validations[0].expression
           pattern: 'namespace\.cozystack\.io/host'
 
+  - it: normalizes both operands with lowerAscii for case-insensitive comparison
+    # Defense-in-depth: the route hostname is DNS-1123 lowercase
+    # already, but the apex operand is the namespace.cozystack.io/host
+    # label VALUE, which Kubernetes permits to carry uppercase. Pin
+    # .lowerAscii() on both operands for HTTPRoute (doc 0) and TLSRoute
+    # (doc 2), which share the same CEL validator.
+    asserts:
+      - documentIndex: 0
+        matchRegex:
+          path: spec.validations[0].expression
+          pattern: 'h\.lowerAscii\(\) == namespaceObject\.metadata\.labels\["namespace\.cozystack\.io/host"\]\.lowerAscii\(\)'
+      - documentIndex: 2
+        matchRegex:
+          path: spec.validations[0].expression
+          pattern: 'h\.lowerAscii\(\) == namespaceObject\.metadata\.labels\["namespace\.cozystack\.io/host"\]\.lowerAscii\(\)'
+
   - it: validation actions are Deny so requests fail closed
     asserts:
       - documentIndex: 1

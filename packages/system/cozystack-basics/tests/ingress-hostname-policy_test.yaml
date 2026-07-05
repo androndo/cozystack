@@ -87,6 +87,32 @@ tests:
           path: spec.validations[0].expression
           pattern: 'namespace\.cozystack\.io/host'
 
+  - it: normalizes both operands with lowerAscii for case-insensitive comparison
+    # Defense-in-depth: the resource-side host is DNS-1123
+    # lowercase already, but the apex operand is the
+    # namespace.cozystack.io/host label VALUE, which Kubernetes permits
+    # to carry uppercase. Pin .lowerAscii() on the host operand, the apex
+    # label operand, and the templated root-host literal for both the
+    # rules[].host and tls[].hosts[] branches so a future edit cannot
+    # silently drop the normalization.
+    asserts:
+      - documentIndex: 0
+        matchRegex:
+          path: spec.validations[0].expression
+          pattern: 'r\.host\.lowerAscii\(\)'
+      - documentIndex: 0
+        matchRegex:
+          path: spec.validations[0].expression
+          pattern: 'h\.lowerAscii\(\)'
+      - documentIndex: 0
+        matchRegex:
+          path: spec.validations[0].expression
+          pattern: 'namespaceObject\.metadata\.labels\["namespace\.cozystack\.io/host"\]\.lowerAscii\(\)'
+      - documentIndex: 0
+        matchRegex:
+          path: spec.validations[0].expression
+          pattern: '"example\.org"\.lowerAscii\(\)'
+
   - it: allows a hostname outside the platform root apex (external custom domain)
     # Narrow rule: a tenant may route its own domain that lies entirely
     # outside the platform root apex (templated from _cluster.root-host).
@@ -97,11 +123,11 @@ tests:
       - documentIndex: 0
         matchRegex:
           path: spec.validations[0].expression
-          pattern: '!\(r\.host == "example\.org" \|\| r\.host\.endsWith\("\.example\.org"\)\)'
+          pattern: '!\(r\.host\.lowerAscii\(\) == "example\.org"\.lowerAscii\(\) \|\| r\.host\.lowerAscii\(\)\.endsWith\("\.example\.org"\.lowerAscii\(\)\)\)'
       - documentIndex: 0
         matchRegex:
           path: spec.validations[0].expression
-          pattern: '!\(h == "example\.org" \|\| h\.endsWith\("\.example\.org"\)\)'
+          pattern: '!\(h\.lowerAscii\(\) == "example\.org"\.lowerAscii\(\) \|\| h\.lowerAscii\(\)\.endsWith\("\.example\.org"\.lowerAscii\(\)\)\)'
 
   - it: does not let a wildcard use the outside-root path (would match the platform apex)
     # A wildcard on the root's parent label (e.g. *.org when root is
@@ -113,11 +139,11 @@ tests:
       - documentIndex: 0
         matchRegex:
           path: spec.validations[0].expression
-          pattern: '!r\.host\.startsWith\("\*\."\) && !\(r\.host == "example\.org"'
+          pattern: '!r\.host\.lowerAscii\(\)\.startsWith\("\*\."\) && !\(r\.host\.lowerAscii\(\) == "example\.org"\.lowerAscii\(\)'
       - documentIndex: 0
         matchRegex:
           path: spec.validations[0].expression
-          pattern: '!h\.startsWith\("\*\."\) && !\(h == "example\.org"'
+          pattern: '!h\.lowerAscii\(\)\.startsWith\("\*\."\) && !\(h\.lowerAscii\(\) == "example\.org"\.lowerAscii\(\)'
 
   - it: allows a wildcard under the own apex (own-apex path is not wildcard-gated)
     # The !startsWith("*.") gate applies ONLY to the outside-root branch.
@@ -130,11 +156,11 @@ tests:
       - documentIndex: 0
         matchRegex:
           path: spec.validations[0].expression
-          pattern: 'r\.host\.endsWith\("\." \+ namespaceObject\.metadata\.labels\["namespace\.cozystack\.io/host"\]\) \|\| \(!r\.host\.startsWith\("\*\."\)'
+          pattern: 'r\.host\.lowerAscii\(\)\.endsWith\("\." \+ namespaceObject\.metadata\.labels\["namespace\.cozystack\.io/host"\]\.lowerAscii\(\)\) \|\| \(!r\.host\.lowerAscii\(\)\.startsWith\("\*\."\)'
       - documentIndex: 0
         matchRegex:
           path: spec.validations[0].expression
-          pattern: 'h\.endsWith\("\." \+ namespaceObject\.metadata\.labels\["namespace\.cozystack\.io/host"\]\) \|\| \(!h\.startsWith\("\*\."\)'
+          pattern: 'h\.lowerAscii\(\)\.endsWith\("\." \+ namespaceObject\.metadata\.labels\["namespace\.cozystack\.io/host"\]\.lowerAscii\(\)\) \|\| \(!h\.lowerAscii\(\)\.startsWith\("\*\."\)'
 
   - it: rejects a hostless or empty-host catch-all rule
     # A legacy Ingress rule with no .host (absent OR empty string) matches

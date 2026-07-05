@@ -25,13 +25,17 @@ spec:
          ? namespaceObject.metadata.labels["namespace.cozystack.io/host"]
          : ""
   validations:
+  # Both operands are normalized with .lowerAscii() as defense-in-depth:
+  # the listener hostname is DNS-1123 lowercase already, but tenantHost
+  # comes from the namespace.cozystack.io/host label value, which
+  # Kubernetes permits to carry uppercase.
   - expression: >-
       variables.tenantHost == "" ||
       !has(object.spec.listeners) ||
       object.spec.listeners.all(l,
         !has(l.hostname) ||
-        l.hostname == variables.tenantHost ||
-        l.hostname.endsWith("." + variables.tenantHost)
+        l.hostname.lowerAscii() == variables.tenantHost.lowerAscii() ||
+        l.hostname.lowerAscii().endsWith("." + variables.tenantHost.lowerAscii())
       )
     messageExpression: >-
       "Gateway listener hostname must equal " + variables.tenantHost +

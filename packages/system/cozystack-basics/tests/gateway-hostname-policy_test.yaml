@@ -68,11 +68,18 @@ tests:
       - documentIndex: 0
         matchRegex:
           path: spec.validations[0].expression
-          pattern: 'l\.hostname\.endsWith'
+          pattern: 'l\.hostname\.lowerAscii\(\)\.endsWith'
       - documentIndex: 0
         matchRegex:
           path: spec.validations[0].expression
           pattern: 'variables\.tenantHost'
+      # Defense-in-depth: both operands normalized with
+      # lowerAscii() — tenantHost comes from the label value, which may
+      # carry uppercase even though the listener hostname is DNS-1123.
+      - documentIndex: 0
+        matchRegex:
+          path: spec.validations[0].expression
+          pattern: 'l\.hostname\.lowerAscii\(\) == variables\.tenantHost\.lowerAscii\(\)'
 
   - it: cozystack-gateway-hostname-policy Binding is fail-closed (validationActions Deny)
     asserts:

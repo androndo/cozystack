@@ -401,6 +401,70 @@ EOF
   kubectl -n tenant-test delete httproute route-hostname-allow-probe --ignore-not-found
 }
 
+@test "cozystack-route-hostname-policy VAP matches the tenant apex case-insensitively" {
+  # Defense-in-depth: the route hostname is DNS-1123 lowercase, but the apex
+  # operand is the namespace.cozystack.io/host label VALUE, which Kubernetes
+  # permits to carry uppercase. Under a mixed-case apex (Test.Example.Org),
+  # a lowercase in-apex HTTPRoute (probe.test.example.org) must still be
+  # ALLOWED — the VAP normalizes both operands with .lowerAscii(). Without
+  # that normalization the VAP compares "probe.test.example.org" against apex
+  # "Test.Example.Org" and wrongly denies a legitimate route, so this fails
+  # pre-fix and passes post-fix. This is the only runtime shape that
+  # exercises .lowerAscii(): an uppercase hostname on the route itself is
+  # stripped by built-in DNS-1123 validation before the VAP ever runs.
+  #
+  # Use a throwaway tenant-* namespace with its own mixed-case apex rather
+  # than relabelling the shared tenant-test namespace: an interrupted run or
+  # a failed restore would otherwise leave tenant-test mixed-case and poison
+  # every later test. The tenant-* prefix is required for the VAP's
+  # matchCondition to fire; the CREATE with the host label is admitted
+  # because the e2e identity is a trusted caller for the namespace host-label
+  # immutability VAP.
+  # Pre-clean a stale namespace left by an interrupted prior run (e2e convention).
+  kubectl delete namespace tenant-case-probe --ignore-not-found --wait=true --timeout=60s
+  kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tenant-case-probe
+  labels:
+    namespace.cozystack.io/host: Test.Example.Org
+EOF
+  # Guard against a vacuous pass: the apex must actually be mixed-case. A
+  # lowercase apex would admit the route regardless of the fix, and an absent
+  # apex would deny it via the fail-closed nil-guard — either way the test
+  # would stop proving case-insensitivity.
+  apex=$(kubectl get namespace tenant-case-probe -o jsonpath='{.metadata.labels.namespace\.cozystack\.io/host}')
+  if [ "$apex" != "Test.Example.Org" ]; then
+    echo "SETUP FAILURE: tenant-case-probe apex is not mixed-case (got '$apex')" >&2
+    kubectl delete namespace tenant-case-probe --ignore-not-found --wait=false
+    return 1
+  fi
+  if output=$(kubectl apply -f - 2>&1 <<'EOF'
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: route-hostname-case-probe
+  namespace: tenant-case-probe
+spec:
+  hostnames:
+  - "probe.test.example.org"
+  rules:
+  - backendRefs:
+    - name: kubernetes
+      namespace: default
+      port: 443
+EOF
+); then
+    kubectl delete namespace tenant-case-probe --ignore-not-found --wait=false
+  else
+    kubectl delete namespace tenant-case-probe --ignore-not-found --wait=false
+    echo "BUG: VAP denied a lowercase in-apex HTTPRoute under a mixed-case apex — .lowerAscii() normalization missing or broken" >&2
+    echo "$output" >&2
+    return 1
+  fi
+}
+
 @test "cozystack-ingress-hostname-policy VAP and binding are installed" {
   # Legacy-Ingress counterpart of the gateway/route hostname VAPs. Gateway
   # API is off by default, so tenant apps publish through a legacy
@@ -665,6 +729,78 @@ spec:
 EOF
 
   kubectl -n tenant-test delete ingress ingress-hostname-allow-probe --ignore-not-found
+}
+
+@test "cozystack-ingress-hostname-policy VAP matches the tenant apex case-insensitively" {
+  # Defense-in-depth: the Ingress rules[].host and tls[].hosts[] are DNS-1123
+  # lowercase, but the apex operand is the namespace.cozystack.io/host label
+  # VALUE, which Kubernetes permits to carry uppercase. Under a mixed-case
+  # apex (Test.Example.Org), a lowercase in-apex Ingress (rule host and tls
+  # host both probe.test.example.org) must still be ALLOWED — the VAP
+  # normalizes both operands with .lowerAscii(). Without that normalization
+  # the VAP compares "probe.test.example.org" against apex "Test.Example.Org"
+  # and wrongly denies a legitimate Ingress, so this fails pre-fix and passes
+  # post-fix. Ingress is the default publish path (Gateway API is off by
+  # default) and carries the most complex CEL (both the rule-host and tls-host
+  # branches), so it gets its own runtime guard alongside the route test.
+  #
+  # Use a throwaway tenant-* namespace with its own mixed-case apex rather
+  # than relabelling the shared tenant-test namespace: an interrupted run or
+  # a failed restore would otherwise leave tenant-test mixed-case and poison
+  # every later test. The tenant-* prefix is required for the VAP's
+  # matchCondition to fire; the CREATE with the host label is admitted
+  # because the e2e identity is a trusted caller for the namespace host-label
+  # immutability VAP.
+  # Pre-clean a stale namespace left by an interrupted prior run (e2e convention).
+  kubectl delete namespace tenant-ingress-case-probe --ignore-not-found --wait=true --timeout=60s
+  kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tenant-ingress-case-probe
+  labels:
+    namespace.cozystack.io/host: Test.Example.Org
+EOF
+  # Guard against a vacuous pass: the apex must actually be mixed-case. A
+  # lowercase apex would admit the Ingress regardless of the fix, and an
+  # absent apex would deny it via the fail-closed nil-guard.
+  apex=$(kubectl get namespace tenant-ingress-case-probe -o jsonpath='{.metadata.labels.namespace\.cozystack\.io/host}')
+  if [ "$apex" != "Test.Example.Org" ]; then
+    echo "SETUP FAILURE: tenant-ingress-case-probe apex is not mixed-case (got '$apex')" >&2
+    kubectl delete namespace tenant-ingress-case-probe --ignore-not-found --wait=false
+    return 1
+  fi
+  if output=$(kubectl apply -f - 2>&1 <<'EOF'
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-hostname-case-probe
+  namespace: tenant-ingress-case-probe
+spec:
+  tls:
+  - hosts:
+    - "probe.test.example.org"
+    secretName: noop-tls
+  rules:
+  - host: "probe.test.example.org"
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: noop
+            port:
+              number: 80
+EOF
+); then
+    kubectl delete namespace tenant-ingress-case-probe --ignore-not-found --wait=false
+  else
+    kubectl delete namespace tenant-ingress-case-probe --ignore-not-found --wait=false
+    echo "BUG: VAP denied a lowercase in-apex Ingress under a mixed-case apex — .lowerAscii() normalization missing or broken" >&2
+    echo "$output" >&2
+    return 1
+  fi
 }
 
 @test "cozystack-ingress-hostname-policy VAP allows an Ingress host outside the platform root apex" {
