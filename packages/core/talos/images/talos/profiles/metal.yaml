@@ -21,6 +21,11 @@ input:
     - imageRef: ghcr.io/siderolabs/qlogic-firmware:20260519@sha256:8c3a6e40d79f9d5a27b06dd785ccc140f76d228ede2562950dfac53ceb4518eb
     - imageRef: ghcr.io/siderolabs/drbd:9.3.2-v1.13.5@sha256:aecfdaeb280d26be0e748af93514ad989a66ce707d4d9ac5d72fcc284604658b
     - imageRef: ghcr.io/siderolabs/zfs:2.4.3-v1.13.5@sha256:de38940fea680ffc12d85f4d57210a1ef4fab873a7e51d86e62d3280e04b9ec1
+customization:
+  extraKernelArgs:
+    # CVE-2026-53359: disable KVM nested virtualization (guest-to-host escape mitigation)
+    - kvm_intel.nested=0
+    - kvm_amd.nested=0
 output:
   kind: image
   imageOptions: { diskSize: 1306525696, diskFormat: raw }
