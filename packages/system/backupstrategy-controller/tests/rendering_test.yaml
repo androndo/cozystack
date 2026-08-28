@@ -15,6 +15,7 @@ templates:
   - templates/strategy-mariadb-default.yaml
   - templates/strategy-etcd-default.yaml
   - templates/strategy-altinity-default.yaml
+  - templates/strategy-redis-default.yaml
   - templates/strategy-foundationdb-default.yaml
   - templates/strategy-velero-vminstance-default.yaml
   - templates/strategy-velero-vmdisk-default.yaml
@@ -51,6 +52,9 @@ tests:
         template: templates/strategy-altinity-default.yaml
       - hasDocuments:
           count: 0
+        template: templates/strategy-redis-default.yaml
+      - hasDocuments:
+          count: 0
         template: templates/strategy-foundationdb-default.yaml
       - hasDocuments:
           count: 0
@@ -62,7 +66,7 @@ tests:
           count: 0
         template: templates/velero-bsl.yaml
 
-  - it: "cozy-default BackupClass is the Day-1 tenant interface: renders unconditionally with all six routes (FoundationDB intentionally unbound)"
+  - it: "cozy-default BackupClass is the Day-1 tenant interface: renders unconditionally with all seven routes (FoundationDB intentionally unbound)"
     asserts:
       - hasDocuments:
           count: 1
@@ -73,7 +77,7 @@ tests:
         template: templates/backupclass-default.yaml
       - lengthEqual:
           path: spec.strategies
-          count: 6
+          count: 7
         template: templates/backupclass-default.yaml
 
   - it: "all Strategy CRs and the Velero BSL render once a bucket name resolves"
@@ -92,6 +96,9 @@ tests:
       - hasDocuments:
           count: 1
         template: templates/strategy-altinity-default.yaml
+      - hasDocuments:
+          count: 1
+        template: templates/strategy-redis-default.yaml
       - hasDocuments:
           count: 1
         template: templates/strategy-foundationdb-default.yaml

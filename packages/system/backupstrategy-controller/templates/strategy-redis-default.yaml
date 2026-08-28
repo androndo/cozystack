@@ -1,0 +1,174 @@
+{{/*
+  Strategy template rendering uses two layers of Go templates:
+   1. Helm renders this file at chart install time. Anything inside
+      `{{ ... }}` is interpreted by Helm.
+   2. The strategy controller renders the resulting Strategy CR
+      per-BackupJob, expanding `{{ .Application | .Release | .Mode |
+      .Backup }}` against the live application object.
+  To emit a literal "{{ .Foo }}" that survives Helm, we pass it as the
+  string argument of `printf` — Helm does not interpret inner template
+  delimiters inside printf's quoted strings. Do NOT inline the literal
+  directly or Helm will try to evaluate the inner expression at chart
+  install time and fail.
+
+  Gate on a resolved $bucketName: an ungated Strategy CR has no RESTMapping
+  on a fresh install, Helm Build() fails "no matches for kind", and the
+  release applies zero objects (including the CRDs). See
+  strategy-mongodb-default.yaml for the full rationale.
+*/}}
+{{- $bucketName := include "backupstrategy-controller.bucketName" . -}}
+{{- if $bucketName -}}
+apiVersion: strategy.backups.cozystack.io/v1alpha1
+kind: Redis
+metadata:
+  name: cozy-default-redis
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      {{- if .Values.backupStorage.endpointCASecretName }}
+      volumes:
+        # A self-signed S3 endpoint (SeaweedFS) is verified against this CA when
+        # the admin points endpointCASecretName at a Secret carrying ca.crt in
+        # the app namespace. Absent (the default), an https endpoint falls back
+        # to skip-verify and a plain http endpoint needs no CA at all.
+        - name: s3-ca
+          secret:
+            secretName: {{ .Values.backupStorage.endpointCASecretName | quote }}
+            optional: true
+      {{- end }}
+      containers:
+        - name: redis-backup
+          image: "{{ .Values.backupStrategyController.redisBackupClientImage }}"
+          imagePullPolicy: IfNotPresent
+          {{- if .Values.backupStorage.endpointCASecretName }}
+          volumeMounts:
+            - name: s3-ca
+              mountPath: /etc/s3-ca
+              readOnly: true
+          {{- end }}
+          env:
+            # Redis password, when the app has authEnabled (the default). The
+            # chart emits the Secret <release>-auth; mount it optionally so a
+            # no-auth app still schedules.
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ printf "{{ .Release.Name }}-auth" | quote }}
+                  key: password
+                  optional: true
+            # S3 coordinates come from cozy-backups-creds, projected into the
+            # app namespace by the backupstrategy-controller before every
+            # BackupJob/RestoreJob. endpoint is a BARE host (no scheme) by
+            # design; the script prepends https:// when unscheme'd.
+            - name: S3_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: cozy-backups-creds
+                  key: endpoint
+            - name: S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: cozy-backups-creds
+                  key: bucketName
+            - name: S3_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: cozy-backups-creds
+                  key: region
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: cozy-backups-creds
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: cozy-backups-creds
+                  key: AWS_SECRET_ACCESS_KEY
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              MODE="{{ printf "{{ .Mode }}" }}"
+              # The sentinel Service always belongs to the app we operate on:
+              # the source on backup, the restore TARGET on restore (both are
+              # .Release.Name at driver-render time). rfs- is the spotahome
+              # operator's sentinel Service prefix; mymaster is its master name.
+              SENTINEL="rfs-{{ printf "{{ .Release.Name }}" }}"
+              # The S3 object key is scoped by the SOURCE app so a to-copy
+              # restore reads the source's snapshot: .Backup is set only on
+              # restore and names the source; on backup fall back to the
+              # release (source == target).
+              SRC="{{ printf "{{ if .Backup }}{{ .Backup.ApplicationRef.Name }}{{ else }}{{ .Release.Name }}{{ end }}" }}"
+              NS="{{ printf "{{ .Release.Namespace }}" }}"
+              KEY="${NS}/${SRC}/dump.rdb"
+
+              AUTH=""
+              if [ -n "${REDIS_PASSWORD:-}" ]; then
+                AUTH="-a ${REDIS_PASSWORD} --no-auth-warning"
+              fi
+
+              # Discover the current master via any sentinel — the RedisFailover
+              # master moves on failover, so a fixed host would break after one.
+              addr=$(redis-cli -h "${SENTINEL}" -p 26379 sentinel get-master-addr-by-name mymaster)
+              MHOST=$(echo "${addr}" | sed -n '1p')
+              MPORT=$(echo "${addr}" | sed -n '2p')
+              if [ -z "${MHOST}" ] || [ -z "${MPORT}" ]; then
+                echo "could not resolve redis master from sentinel ${SENTINEL}" >&2
+                exit 1
+              fi
+
+              case "${S3_ENDPOINT}" in
+                http://*|https://*) BASE="${S3_ENDPOINT}" ;;
+                *)                  BASE="https://${S3_ENDPOINT}" ;;
+              esac
+              TLS=""
+              case "${BASE}" in
+                https://*)
+                  # Prefer verifying against the mounted CA; fall back to
+                  # skip-verify only when no CA is projected (external S3 that
+                  # is publicly trusted needs neither).
+                  if [ -f /etc/s3-ca/ca.crt ]; then TLS="--cacert /etc/s3-ca/ca.crt";
+                  elif [ -f /etc/s3-ca/tls.crt ]; then TLS="--cacert /etc/s3-ca/tls.crt";
+                  else TLS="-k"; fi
+                  ;;
+              esac
+              s3() {
+                curl -fsS ${TLS} \
+                  --aws-sigv4 "aws:amz:${S3_REGION}:s3" \
+                  --user "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" "$@"
+              }
+              OBJ="${BASE}/${S3_BUCKET}/${KEY}"
+
+              if [ "${MODE}" = "backup" ]; then
+                echo "dumping RDB from master ${MHOST}:${MPORT}"
+                redis-cli -h "${MHOST}" -p "${MPORT}" ${AUTH} --rdb /tmp/dump.rdb
+                echo "uploading s3://${S3_BUCKET}/${KEY}"
+                s3 -X PUT --upload-file /tmp/dump.rdb "${OBJ}"
+              else
+                echo "downloading s3://${S3_BUCKET}/${KEY}"
+                s3 -o /tmp/dump.rdb "${OBJ}"
+                # Convert the RDB to an AOF (RESP) stream and replay it into the
+                # target master. FLUSHALL first so an in-place restore is a
+                # replacement, not a merge onto stale keys.
+                rdb -c aof -o /tmp/replay.aof /tmp/dump.rdb
+                redis-cli -h "${MHOST}" -p "${MPORT}" ${AUTH} FLUSHALL
+                redis-cli -h "${MHOST}" -p "${MPORT}" ${AUTH} --pipe < /tmp/replay.aof
+                echo "restore complete into ${MHOST}:${MPORT}"
+              fi
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+{{- end -}}

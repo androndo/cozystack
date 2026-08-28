@@ -41,6 +41,7 @@ func TestSupportedBackupStrategyKindsMatchesDispatch(t *testing.T) {
 		strategyv1alpha1.MariaDBStrategyKind,
 		strategyv1alpha1.FoundationDBStrategyKind,
 		strategyv1alpha1.EtcdStrategyKind,
+		strategyv1alpha1.RedisStrategyKind,
 	}
 	sort.Strings(got)
 	sort.Strings(want)
